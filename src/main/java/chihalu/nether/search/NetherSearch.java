@@ -697,9 +697,6 @@ private static void resetGlowState(MinecraftServer server) {
 		}
 	}
 
-
-
-
 private static int showCommandUsage(ServerCommandSource source) {
 
 		source.sendFeedback(() -> message("command_list_title").formatted(Formatting.LIGHT_PURPLE), false);
@@ -714,12 +711,6 @@ private static int showCommandUsage(ServerCommandSource source) {
 		return 1;
 
 	}
-
-
-
-
-
-
 // 構造物の座標と種別ラベルを保持
 private record StructureResult(BlockPos pos, ChunkPos chunkPos, String structureTypeKey) {}
 
