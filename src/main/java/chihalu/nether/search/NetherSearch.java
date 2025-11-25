@@ -22,8 +22,12 @@ import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.world.ServerChunkManager;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.structure.NetherFortressGenerator;
+import net.minecraft.structure.PoolStructurePiece;
 import net.minecraft.structure.StructurePiece;
 import net.minecraft.structure.StructureStart;
+import net.minecraft.structure.pool.LegacySinglePoolElement;
+import net.minecraft.structure.pool.SinglePoolElement;
+import net.minecraft.structure.pool.StructurePoolElement;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.Identifier;
@@ -56,13 +60,17 @@ public class NetherSearch implements ModInitializer {
 	public static final String MOD_ID = "nether-search";
 
 	private static final int CHEST_GLOW_RADIUS = 96;
+	private static final int MIN_CHEST_RADIUS = 16;
+	private static final int MAX_CHEST_RADIUS = 192;
+	private static final long GLOW_DURATION_TICKS = 20L * 60 * 10;
 	private static final List<ArmorStandEntity> ACTIVE_MARKERS = new ArrayList<>();
-	private static boolean chestGlowEnabled = false;
 	private static boolean boundingBoxWarningIssued = false;
 	private static final Map<String, Set<Long>> FOUND_STRUCTURE_CHUNKS = new HashMap<>();
 	private static final Map<GlowKey, ArmorStandEntity> ACTIVE_GLOW_MARKERS = new HashMap<>();
 	private static final String GLOW_MARKER_TAG = "nether_search:glow_marker";
 	private static boolean needsMarkerRefresh = true;
+	private static long glowExpireTick = -1;
+	private static RegistryKey<World> glowWorldKey = null;
 
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
@@ -106,9 +114,14 @@ public class NetherSearch implements ModInitializer {
 										.executes(ctx -> executeLocateList(ctx.getSource(), "bastion_remnant", 1, false))
 										.then(CommandManager.argument("count", IntegerArgumentType.integer(1, 20))
 												.executes(ctx -> executeLocateList(ctx.getSource(), "bastion_remnant", IntegerArgumentType.getInteger(ctx, "count"), false)))))
-								.then(CommandManager.literal("glowing")
-										.then(CommandManager.literal("chest")
-												.executes(ctx -> executeGlowChests(ctx.getSource()))))
+						.then(CommandManager.literal("chest")
+								.executes(ctx -> executeChestCount(ctx.getSource(), CHEST_GLOW_RADIUS))
+								.then(CommandManager.argument("range", IntegerArgumentType.integer(MIN_CHEST_RADIUS))
+										.executes(ctx -> executeChestCount(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "range")))))
+						.then(CommandManager.literal("glowing_chest")
+								.executes(ctx -> executeGlowChests(ctx.getSource(), CHEST_GLOW_RADIUS))
+								.then(CommandManager.argument("range", IntegerArgumentType.integer(MIN_CHEST_RADIUS))
+										.executes(ctx -> executeGlowChests(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "range")))))
 						.then(CommandManager.literal("exp")
 								.executes(ctx -> showCommandUsage(ctx.getSource())))
 		);
@@ -163,7 +176,7 @@ public class NetherSearch implements ModInitializer {
 						continue;
 					}
 
-					BlockPos refinedPos = resolveStructureCenter(world, chunkPos, targetList);
+					BlockPos refinedPos = resolveStructureCenter(world, chunkPos, targetList, structureId);
 					BlockPos candidatePos = refinedPos != null ? refinedPos : located;
 
 					if (currentChunk != null && currentChunk.equals(chunkPos)) {
@@ -206,7 +219,7 @@ public class NetherSearch implements ModInitializer {
 				double distance = Math.sqrt(originVec.squaredDistanceTo(Vec3d.ofCenter(pos)));
 				Text line = Text.empty()
 						.append(Text.literal("[" + index + "] ").formatted(Formatting.GREEN))
-						.append(Text.literal(pos.getX() + " ~ " + pos.getZ()).formatted(Formatting.YELLOW))
+						.append(Text.literal(pos.getX() + " / " + pos.getZ()).formatted(Formatting.YELLOW))
 						.append(Text.literal(" (距離: " + String.format("%.1f", distance) + ")"));
 				source.sendFeedback(() -> line, false);
 				index++;
@@ -245,51 +258,64 @@ public class NetherSearch implements ModInitializer {
 		}
 	}
 
-	private static int executeGlowChests(ServerCommandSource source) {
-		if (chestGlowEnabled) {
-			clearGlowMarkers(false);
-			source.sendFeedback(() -> Text.literal("チェストの位置の発光をオフにしました"), false);
+private static int executeGlowChests(ServerCommandSource source, int requestedRadius) {
+	int radius = validateRadius(source, requestedRadius);
+	if (radius < 0) {
 			return 0;
 		}
-
 		ServerWorld world = source.getWorld();
 		BlockPos center = BlockPos.ofFloored(source.getPosition());
-		int count = createGlowMarkers(world, center);
+		clearGlowMarkers();
+		int count = createGlowMarkers(world, center, radius);
 		if (count <= 0) {
-			source.sendFeedback(() -> Text.literal("範囲内にチェストは見つかりませんでした"), false);
+			source.sendFeedback(() -> Text.literal("周囲にチェストは見つかりませんでした"), false);
 			return 0;
 		}
-		source.sendFeedback(() -> Text.literal("チェストの位置 " + count + "個 を発光させました"), false);
-		return count;
+		glowWorldKey = world.getRegistryKey();
+		glowExpireTick = world.getTime() + GLOW_DURATION_TICKS;
+	source.sendFeedback(() -> Text.literal("チェスト " + count + "個を発光させました（10分後に自動停止）"), false);
+	return count;
+}
+
+private static int validateRadius(ServerCommandSource source, int radius) {
+	if (radius > MAX_CHEST_RADIUS) {
+		source.sendError(Text.literal("※範囲上限を超えています※").formatted(Formatting.RED));
+		return -1;
 	}
+	if (radius < MIN_CHEST_RADIUS) {
+		return MIN_CHEST_RADIUS;
+	}
+	return radius;
+}
 
-	private static int createGlowMarkers(ServerWorld world, BlockPos center) {
-		int radius = CHEST_GLOW_RADIUS;
-		int chunkRadius = Math.max(1, (radius / 16) + 1);
-		int centerChunkX = center.getX() >> 4;
-		int centerChunkZ = center.getZ() >> 4;
-		ServerChunkManager chunkManager = world.getChunkManager();
+private static List<BlockPos> findNearbyChests(ServerWorld world, BlockPos center, int radius) {
+	int chunkRadius = Math.max(1, (radius / 16) + 1);
+	int centerChunkX = center.getX() >> 4;
+	int centerChunkZ = center.getZ() >> 4;
+	ServerChunkManager chunkManager = world.getChunkManager();
 
-		List<BlockPos> targets = new ArrayList<>();
-		for (int chunkX = centerChunkX - chunkRadius; chunkX <= centerChunkX + chunkRadius; chunkX++) {
-			for (int chunkZ = centerChunkZ - chunkRadius; chunkZ <= centerChunkZ + chunkRadius; chunkZ++) {
-				WorldChunk chunk = chunkManager.getWorldChunk(chunkX, chunkZ);
-				if (chunk == null) {
-					continue;
-				}
-				for (BlockEntity blockEntity : chunk.getBlockEntities().values()) {
-					if (blockEntity instanceof ChestBlockEntity && blockEntity.getPos().isWithinDistance(center, radius)) {
-						targets.add(blockEntity.getPos());
-					}
+	List<BlockPos> targets = new ArrayList<>();
+	for (int chunkX = centerChunkX - chunkRadius; chunkX <= centerChunkX + chunkRadius; chunkX++) {
+		for (int chunkZ = centerChunkZ - chunkRadius; chunkZ <= centerChunkZ + chunkRadius; chunkZ++) {
+			WorldChunk chunk = chunkManager.getWorldChunk(chunkX, chunkZ);
+			if (chunk == null) {
+				continue;
+			}
+			for (BlockEntity blockEntity : chunk.getBlockEntities().values()) {
+				if (blockEntity instanceof ChestBlockEntity && blockEntity.getPos().isWithinDistance(center, radius)) {
+					targets.add(blockEntity.getPos());
 				}
 			}
 		}
+	}
+	return targets;
+}
 
-		if (targets.isEmpty()) {
-			return 0;
+private static int createGlowMarkers(ServerWorld world, BlockPos center, int radius) {
+	List<BlockPos> targets = findNearbyChests(world, center, radius);
+	if (targets.isEmpty()) {
+		return 0;
 		}
-
-		clearGlowMarkers(true);
 		for (BlockPos pos : targets) {
 			ArmorStandEntity marker = new ArmorStandEntity(world, pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5);
 			marker.setInvisible(true);
@@ -303,13 +329,12 @@ public class NetherSearch implements ModInitializer {
 				registerMarker(world, marker);
 			}
 		}
-
-		chestGlowEnabled = true;
 		needsMarkerRefresh = false;
 		return targets.size();
 	}
 
-	private static void clearGlowMarkers(boolean keepState) {
+
+	private static void clearGlowMarkers() {
 		for (ArmorStandEntity entity : ACTIVE_MARKERS) {
 			if (entity != null && entity.isAlive()) {
 				entity.discard();
@@ -317,9 +342,8 @@ public class NetherSearch implements ModInitializer {
 		}
 		ACTIVE_MARKERS.clear();
 		ACTIVE_GLOW_MARKERS.clear();
-		if (!keepState) {
-			chestGlowEnabled = false;
-		}
+		glowExpireTick = -1;
+		glowWorldKey = null;
 	}
 
 	private static String getStructureDisplayName(String id) {
@@ -339,11 +363,11 @@ public class NetherSearch implements ModInitializer {
 		FOUND_STRUCTURE_CHUNKS.computeIfAbsent(id, key -> new HashSet<>()).add(chunkPos.toLong());
 	}
 
-	private static BlockPos resolveStructureCenter(ServerWorld world, ChunkPos chunkPos, RegistryEntryList<Structure> targetList) {
-		LongSet forcedChunks = world.getForcedChunks();
-		long chunkLong = ChunkPos.toLong(chunkPos.x, chunkPos.z);
-		boolean alreadyForced = forcedChunks.contains(chunkLong);
-		if (!alreadyForced) {
+private static BlockPos resolveStructureCenter(ServerWorld world, ChunkPos chunkPos, RegistryEntryList<Structure> targetList, String structureId) {
+	LongSet forcedChunks = world.getForcedChunks();
+	long chunkLong = ChunkPos.toLong(chunkPos.x, chunkPos.z);
+	boolean alreadyForced = forcedChunks.contains(chunkLong);
+	if (!alreadyForced) {
 			world.setChunkForced(chunkPos.x, chunkPos.z, true);
 		}
 		try {
@@ -357,17 +381,21 @@ public class NetherSearch implements ModInitializer {
 				return null;
 			}
 
-			BlockPos crossing = findBridgeCrossing(start.getChildren());
-			if (crossing != null) {
-				return crossing;
+			BlockPos special = null;
+			if ("fortress".equals(structureId)) {
+				special = findBridgeCrossing(start.getChildren());
+			} else if ("bastion_remnant".equals(structureId)) {
+				special = findBastionTreasure(start.getChildren());
+			}
+			if (special != null) {
+				return special;
 			}
 
 			BlockBox box = extractBoundingBox(start);
 			if (box == null) {
 				return null;
 			}
-			return new BlockPos((box.getMinX() + box.getMaxX()) / 2, (box.getMinY() + box.getMaxY()) / 2,
-					(box.getMinZ() + box.getMaxZ()) / 2);
+			return getPieceCenter(box);
 		} finally {
 			if (!alreadyForced) {
 				world.setChunkForced(chunkPos.x, chunkPos.z, false);
@@ -382,9 +410,7 @@ public class NetherSearch implements ModInitializer {
 			if (pieceBox == null) {
 				continue;
 			}
-			BlockPos center = new BlockPos((pieceBox.getMinX() + pieceBox.getMaxX()) / 2,
-					(pieceBox.getMinY() + pieceBox.getMaxY()) / 2,
-					(pieceBox.getMinZ() + pieceBox.getMaxZ()) / 2);
+			BlockPos center = getPieceCenter(pieceBox);
 
 			if (piece instanceof NetherFortressGenerator.BridgeCrossing
 					|| piece instanceof NetherFortressGenerator.CorridorCrossing
@@ -398,23 +424,60 @@ public class NetherSearch implements ModInitializer {
 		return fallback;
 	}
 
+	private static BlockPos findBastionTreasure(List<StructurePiece> pieces) {
+		BlockPos fallback = null;
+		for (StructurePiece piece : pieces) {
+			if (!(piece instanceof PoolStructurePiece poolPiece)) {
+				continue;
+			}
+			Identifier id = getPoolPieceId(poolPiece.getPoolElement());
+			if (id == null) {
+				continue;
+			}
+			String idString = id.toString();
+			BlockBox box = piece.getBoundingBox();
+			if (box == null) {
+				continue;
+			}
+			if (idString.contains("treasure")) {
+				return getPieceCenter(box);
+			}
+			if (fallback == null && (idString.contains("bridge") || idString.contains("entrance"))) {
+				fallback = getPieceCenter(box);
+			}
+		}
+		return fallback;
+	}
+
+	private static Identifier getPoolPieceId(StructurePoolElement element) {
+		if (element instanceof SinglePoolElement single) {
+			return single.getIdOrThrow();
+		}
+		if (element instanceof LegacySinglePoolElement legacy) {
+			return legacy.getIdOrThrow();
+		}
+		return null;
+	}
+
+	private static BlockPos getPieceCenter(BlockBox pieceBox) {
+		return new BlockPos((pieceBox.getMinX() + pieceBox.getMaxX()) / 2,
+				(pieceBox.getMinY() + pieceBox.getMaxY()) / 2,
+				(pieceBox.getMinZ() + pieceBox.getMaxZ()) / 2);
+	}
+
 	private static void handleChestBreak(ServerWorld world, BlockPos pos) {
 		GlowKey key = new GlowKey(world.getRegistryKey(), pos.toImmutable());
 		ArmorStandEntity marker = ACTIVE_GLOW_MARKERS.remove(key);
 		if (marker != null) {
 			marker.discard();
 			ACTIVE_MARKERS.remove(marker);
-			if (ACTIVE_GLOW_MARKERS.isEmpty()) {
-				chestGlowEnabled = false;
-			}
 		}
 	}
 
-	private static void resetGlowState() {
-		ACTIVE_MARKERS.clear();
-		ACTIVE_GLOW_MARKERS.clear();
-		needsMarkerRefresh = true;
-	}
+private static void resetGlowState() {
+		clearGlowMarkers();
+	needsMarkerRefresh = true;
+}
 
 	private static void registerMarker(ServerWorld world, ArmorStandEntity marker) {
 		GlowKey key = new GlowKey(world.getRegistryKey(), marker.getBlockPos().toImmutable());
@@ -424,7 +487,6 @@ public class NetherSearch implements ModInitializer {
 		if (!ACTIVE_MARKERS.contains(marker)) {
 			ACTIVE_MARKERS.add(marker);
 		}
-		chestGlowEnabled = true;
 	}
 
 	private static void refreshTrackedMarkers(ServerWorld world) {
@@ -442,29 +504,19 @@ public class NetherSearch implements ModInitializer {
 		for (ArmorStandEntity marker : markers) {
 			registerMarker(world, marker);
 		}
-		if (markers.isEmpty() && ACTIVE_GLOW_MARKERS.isEmpty()) {
-			chestGlowEnabled = false;
-		}
 		needsMarkerRefresh = false;
-	}
-
-	private static int showCommandUsage(ServerCommandSource source) {
-		source.sendFeedback(() -> Text.literal("コマンド一覧").formatted(Formatting.LIGHT_PURPLE), false);
-		source.sendFeedback(() -> Text.literal("//seed search <見つけたい要塞の種類> <探す数>").formatted(Formatting.YELLOW), false);
-		source.sendFeedback(() -> Text.literal("//seed search new <見つけたい要塞の種類> <探す数>").formatted(Formatting.YELLOW), false);
-		source.sendFeedback(() -> Text.literal("//seed chest（要塞に何個チェストがあるか調べる）").formatted(Formatting.YELLOW), false);
-		source.sendFeedback(() -> Text.literal("//seed glowing chest（要塞にあるチェストの位置を発光させる）").formatted(Formatting.YELLOW), false);
-		source.sendFeedback(() -> Text.literal("※searchの探す数は指定しなくてもデフォルトで1つ探せます※").formatted(Formatting.RED), false);
-		return 1;
 	}
 
 	private static void handleGlowCleanup(ServerWorld world) {
 		if (needsMarkerRefresh && world.getRegistryKey() == World.NETHER) {
 			refreshTrackedMarkers(world);
-			needsMarkerRefresh = false;
+		}
+		if (glowWorldKey != null && glowWorldKey.equals(world.getRegistryKey())
+				&& glowExpireTick > 0 && world.getTime() >= glowExpireTick) {
+			clearGlowMarkers();
+			return;
 		}
 		Iterator<Map.Entry<GlowKey, ArmorStandEntity>> iterator = ACTIVE_GLOW_MARKERS.entrySet().iterator();
-		boolean removedAny = false;
 		while (iterator.hasNext()) {
 			Map.Entry<GlowKey, ArmorStandEntity> entry = iterator.next();
 			GlowKey key = entry.getKey();
@@ -479,12 +531,45 @@ public class NetherSearch implements ModInitializer {
 				}
 				ACTIVE_MARKERS.remove(marker);
 				iterator.remove();
-				removedAny = true;
 			}
 		}
-		if (removedAny && ACTIVE_GLOW_MARKERS.isEmpty()) {
-			chestGlowEnabled = false;
+	}
+
+	private static int executeChestCount(ServerCommandSource source, int requestedRadius) {
+		try {
+			int radius = validateRadius(source, requestedRadius);
+			if (radius < 0) {
+				return 0;
+			}
+			ServerWorld world = source.getWorld();
+			BlockPos center = BlockPos.ofFloored(source.getPosition());
+			List<BlockPos> targets = findNearbyChests(world, center, radius);
+			int count = targets.size();
+			if (count == 0) {
+				source.sendFeedback(() -> Text.literal("周囲にチェストは見つかりませんでした"), false);
+			} else {
+				final int total = count;
+				source.sendFeedback(() -> Text.literal("要塞周辺のチェスト数: " + total + "個"), false);
+			}
+			return count;
+		} catch (Exception e) {
+			LOGGER.error("チェスト数の調査中にエラー", e);
+			source.sendError(Text.literal("チェスト数の調査中にエラーが発生しました: " + e.getClass().getSimpleName()));
+			return 0;
 		}
+	}
+
+
+
+	private static int showCommandUsage(ServerCommandSource source) {
+		source.sendFeedback(() -> Text.literal("�R�}���h�ꗗ").formatted(Formatting.LIGHT_PURPLE), false);
+		source.sendFeedback(() -> Text.literal("//seed search <���������v�ǂ̎��> <�T����>").formatted(Formatting.YELLOW), false);
+		source.sendFeedback(() -> Text.literal("//seed search new <���������v�ǂ̎��> <�T����>").formatted(Formatting.YELLOW), false);
+		source.sendFeedback(() -> Text.literal("//seed chest <�͈̓u���b�N��>").formatted(Formatting.YELLOW), false);
+		source.sendFeedback(() -> Text.literal("//seed glowing_chest <�͈̓u���b�N��>").formatted(Formatting.YELLOW), false);
+
+		source.sendFeedback(() -> Text.literal("��search�̒T�����͎w�肵�Ȃ��Ă��f�t�H���g��1�T���܂���").formatted(Formatting.RED), false);
+		return 1;
 	}
 
 	private record GlowKey(RegistryKey<World> worldKey, BlockPos pos) {}
