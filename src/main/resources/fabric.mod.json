@@ -1,0 +1,40 @@
+{
+	"schemaVersion": 1,
+	"id": "nether-search",
+	"version": "${version}",
+	"name": "Nether Search",
+	"description": "ネザー要塞、ピグリン要塞がある座標を検索出来るMod",
+	"authors": [
+		"chihalu"
+	],
+	"license": "MIT",
+	"icon": "assets/nether-search/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"chihalu.nether.search.NetherSearch"
+		],
+		"client": [
+			"chihalu.nether.search.NetherSearchClient"
+		],
+		"fabric-datagen": [
+			"chihalu.nether.search.NetherSearchDataGenerator"
+		]
+	},
+	"mixins": [
+		"nether-search.mixins.json",
+		{
+			"config": "nether-search.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.18.1",
+		"minecraft": "~1.21.9",
+		"java": ">=21",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"another-mod": "*"
+	}
+}
