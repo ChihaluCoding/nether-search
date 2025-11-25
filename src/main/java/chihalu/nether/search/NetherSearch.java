@@ -71,9 +71,7 @@ public class NetherSearch implements ModInitializer {
 	private static final List<ArmorStandEntity> ACTIVE_MARKERS = new ArrayList<>();
 	private static boolean boundingBoxWarningIssued = false;
 	private static final Map<String, Set<Long>> FOUND_STRUCTURE_CHUNKS = new HashMap<>();
-	private static final Map<String, Set<Long>> VISITED_STRUCTURE_CHUNKS = new HashMap<>();
 	private static final Map<GlowKey, ArmorStandEntity> ACTIVE_GLOW_MARKERS = new HashMap<>();
-	private static final Map<String, RegistryEntryList<Structure>> STRUCTURE_ENTRY_CACHE = new HashMap<>();
 	private static final String GLOW_MARKER_TAG = "nether_search:glow_marker";
 	private static boolean needsMarkerRefresh = true;
 	private static long glowExpireTick = -1;
@@ -156,7 +154,7 @@ private static int executeLocateList(ServerCommandSource source, String structur
 			RegistryKey<Structure> key = RegistryKey.of(RegistryKeys.STRUCTURE, id);
 			Optional<RegistryEntry.Reference<Structure>> structureEntry = structureLookup.getOptional(key);
 			if (structureEntry.isEmpty()) {
-				source.sendError(Text.literal("構造物が見つかりません: " + structureId));
+				source.sendError(message("structure_not_found", structureId));
 				return 0;
 			}
 
@@ -228,23 +226,23 @@ private static int executeLocateList(ServerCommandSource source, String structur
 			}
 
 			if (found.isEmpty()) {
-				source.sendFeedback(() -> Text.literal("範囲内で新しい構造物は見つかりませんでした"), false);
+				source.sendFeedback(() -> message("no_structures_found"), false);
 				return 0;
 			}
 
 			found.sort(Comparator.comparingDouble(result -> originVec.squaredDistanceTo(Vec3d.ofCenter(result.pos()))));
-			String header = found.size() + "個の" + getStructureDisplayName(structureId) + "が見つかりました";
-			source.sendFeedback(() -> Text.literal(header).formatted(Formatting.LIGHT_PURPLE), false);
+			Text structureName = getStructureDisplayName(structureId);
+			MutableText header = message("structure_list_header", found.size(), structureName);
+			source.sendFeedback(() -> header.formatted(Formatting.LIGHT_PURPLE), false);
 			int index = 1;
 			for (StructureResult result : found) {
 				BlockPos pos = result.pos();
-				ChunkPos chunk = result.chunkPos();
-				boolean visited = chunk != null && isStructureVisited(structureId, chunk);
 				double distance = Math.sqrt(originVec.squaredDistanceTo(Vec3d.ofCenter(pos)));
+				MutableText distanceText = message("structure_distance", String.format("%.1f", distance)).formatted(Formatting.GRAY);
 				MutableText displayLine = Text.empty()
-						.append(Text.literal("[" + index + "] ").formatted(visited ? Formatting.AQUA : Formatting.GREEN))
+						.append(Text.literal("[" + index + "] ").formatted(Formatting.GREEN))
 						.append(Text.literal(pos.getX() + " / " + pos.getZ()).formatted(Formatting.YELLOW))
-						.append(Text.literal(" (����: " + String.format("%.1f", distance) + ")").formatted(Formatting.GRAY));
+						.append(distanceText);
 				final Text finalDisplayLine = displayLine;
 				source.sendFeedback(() -> finalDisplayLine, false);
 				index++;
@@ -252,7 +250,7 @@ private static int executeLocateList(ServerCommandSource source, String structur
 			return found.size();
 		} catch (Exception e) {
 			LOGGER.error("構造物検索中にエラー", e);
-			source.sendError(Text.literal("検索中にエラーが発生しました: " + e.getClass().getSimpleName()));
+			source.sendError(message("structure_search_error", e.getClass().getSimpleName()));
 			return 0;
 		}
 	}
@@ -297,19 +295,20 @@ private static int executeGlowChests(ServerCommandSource source, int requestedRa
 	clearGlowMarkers(world.getServer());
 	int count = createGlowMarkers(world, center, radius);
 	if (count <= 0) {
-		source.sendFeedback(() -> Text.literal("この範囲に宝箱はありませんでした"), false);
+		source.sendFeedback(() -> message("glow_none"), false);
 		return 0;
 	}
 	glowWorldKey = world.getRegistryKey();
 	glowExpireTick = world.getTime() + glowSeconds * 20L;
 	final int finalGlowSeconds = glowSeconds;
-	source.sendFeedback(() -> Text.literal("宝箱 " + count + "個を発光させました（" + formatDurationJapanese(finalGlowSeconds) + "で解除）").formatted(Formatting.YELLOW), false);
+	MutableText durationText = formatDurationText(finalGlowSeconds);
+	source.sendFeedback(() -> message("glow_started", count, durationText).formatted(Formatting.YELLOW), false);
 	return count;
 }
 
 private static int validateRadius(ServerCommandSource source, int radius) {
 	if (radius > MAX_CHEST_RADIUS) {
-		source.sendError(Text.literal("指定範囲が上限を超えています").formatted(Formatting.RED));
+		source.sendError(message("radius_too_large").formatted(Formatting.RED));
 		return -1;
 	}
 	if (radius < MIN_CHEST_RADIUS) {
@@ -320,26 +319,30 @@ private static int validateRadius(ServerCommandSource source, int radius) {
 
 private static int validateGlowDuration(ServerCommandSource source, int seconds) {
 	if (seconds < 1) {
-		source.sendError(Text.literal("発光時間は1秒以上を指定してください").formatted(Formatting.RED));
+		source.sendError(message("duration_too_short").formatted(Formatting.RED));
 		return -1;
 	}
 	if (seconds > MAX_GLOW_SECONDS) {
-		source.sendError(Text.literal("発光時間は最大10分（600秒）までです").formatted(Formatting.RED));
+		source.sendError(message("duration_too_long").formatted(Formatting.RED));
 		return -1;
 	}
 	return seconds;
 }
 
-private static String formatDurationJapanese(int seconds) {
+private static MutableText message(String key, Object... args) {
+	return Text.translatable("message.nether_search." + key, args);
+}
+
+private static MutableText formatDurationText(int seconds) {
 	int minutes = seconds / 60;
 	int remain = seconds % 60;
 	if (minutes > 0) {
 		if (remain == 0) {
-			return minutes + "分";
+			return message("duration.minutes", minutes);
 		}
-		return minutes + "分" + remain + "秒";
+		return message("duration.minutes_seconds", minutes, remain);
 	}
-	return seconds + "秒";
+	return message("duration.seconds", seconds);
 }
 
 private static List<BlockPos> findNearbyChests(ServerWorld world, BlockPos center, int radius) {
@@ -406,7 +409,7 @@ private static int createGlowMarkers(ServerWorld world, BlockPos center, int rad
 		if (hadMarkers && targetWorld != null && server != null) {
 			ServerWorld world = server.getWorld(targetWorld);
 			if (world != null) {
-				Text notice = Text.literal("宝箱の位置の発光が解除されました").formatted(Formatting.YELLOW);
+				Text notice = message("glow_cleared").formatted(Formatting.YELLOW);
 				for (ServerPlayerEntity player : world.getPlayers()) {
 					player.sendMessage(notice, false);
 				}
@@ -414,11 +417,11 @@ private static int createGlowMarkers(ServerWorld world, BlockPos center, int rad
 		}
 	}
 
-	private static String getStructureDisplayName(String id) {
+	private static Text getStructureDisplayName(String id) {
 		return switch (id) {
-			case "fortress" -> "ネザー要塞";
-			case "bastion_remnant" -> "ピグリン要塞";
-			default -> id.replace('_', ' ');
+			case "fortress" -> message("structure_name.fortress");
+			case "bastion_remnant" -> message("structure_name.bastion_remnant");
+			default -> Text.literal(id.replace('_', ' '));
 		};
 	}
 
@@ -429,32 +432,6 @@ private static int createGlowMarkers(ServerWorld world, BlockPos center, int rad
 
 	private static void markStructureKnown(String id, ChunkPos chunkPos) {
 		FOUND_STRUCTURE_CHUNKS.computeIfAbsent(id, key -> new HashSet<>()).add(chunkPos.toLong());
-	}
-
-	private static boolean isStructureVisited(String id, ChunkPos chunkPos) {
-		Set<Long> set = VISITED_STRUCTURE_CHUNKS.get(id);
-		return set != null && set.contains(chunkPos.toLong());
-	}
-
-	private static void markStructureVisited(String id, ChunkPos chunkPos) {
-		VISITED_STRUCTURE_CHUNKS.computeIfAbsent(id, key -> new HashSet<>()).add(chunkPos.toLong());
-	}
-
-	private static RegistryEntryList<Structure> getStructureList(ServerWorld world, String structureId) {
-		RegistryEntryList<Structure> cached = STRUCTURE_ENTRY_CACHE.get(structureId);
-		if (cached != null) {
-			return cached;
-		}
-		RegistryEntryLookup<Structure> lookup = world.getRegistryManager().getOrThrow(RegistryKeys.STRUCTURE);
-		Identifier id = Identifier.ofVanilla(structureId);
-		RegistryKey<Structure> key = RegistryKey.of(RegistryKeys.STRUCTURE, id);
-		Optional<RegistryEntry.Reference<Structure>> entry = lookup.getOptional(key);
-		if (entry.isEmpty()) {
-			return null;
-		}
-		RegistryEntryList<Structure> list = RegistryEntryList.of(entry.get());
-		STRUCTURE_ENTRY_CACHE.put(structureId, list);
-		return list;
 	}
 
 private static BlockPos resolveStructureCenter(ServerWorld world, ChunkPos chunkPos, RegistryEntryList<Structure> targetList, String structureId) {
@@ -618,37 +595,6 @@ private static void resetGlowState(MinecraftServer server) {
 		needsMarkerRefresh = false;
 	}
 
-	private static void trackVisitedStructures(ServerWorld world) {
-		if (world.getRegistryKey() != World.NETHER) {
-			return;
-		}
-		for (ServerPlayerEntity player : world.getPlayers()) {
-			BlockPos pos = player.getBlockPos();
-			checkVisitedStructure(world, pos, "fortress");
-			checkVisitedStructure(world, pos, "bastion_remnant");
-		}
-	}
-
-	private static void checkVisitedStructure(ServerWorld world, BlockPos pos, String structureId) {
-		RegistryEntryList<Structure> targets = getStructureList(world, structureId);
-		if (targets == null) {
-			return;
-		}
-		StructureStart start = world.getStructureAccessor().getStructureContaining(pos, targets);
-		if (start == null) {
-			return;
-		}
-		BlockBox box = extractBoundingBox(start);
-		BlockPos center = box != null ? getPieceCenter(box) : null;
-		if (center == null || !center.isWithinDistance(pos, 96)) {
-			return;
-		}
-		ChunkPos chunkPos = extractChunkPos(start);
-		if (chunkPos != null && !isStructureVisited(structureId, chunkPos)) {
-			markStructureVisited(structureId, chunkPos);
-		}
-	}
-
 	private static void handleGlowCleanup(ServerWorld world) {
 		if (needsMarkerRefresh && world.getRegistryKey() == World.NETHER) {
 			refreshTrackedMarkers(world);
@@ -678,7 +624,6 @@ private static void resetGlowState(MinecraftServer server) {
 				iterator.remove();
 			}
 		}
-		trackVisitedStructures(world);
 	}
 
 	private static int executeChestCount(ServerCommandSource source, int requestedRadius) {
@@ -692,15 +637,15 @@ private static void resetGlowState(MinecraftServer server) {
 			List<BlockPos> targets = findNearbyChests(world, center, radius);
 			int count = targets.size();
 			if (count == 0) {
-				source.sendFeedback(() -> Text.literal("周囲にチェストは見つかりませんでした"), false);
+				source.sendFeedback(() -> message("chest_none_nearby"), false);
 			} else {
 				final int total = count;
-				source.sendFeedback(() -> Text.literal("要塞周辺のチェスト数: " + total + "個"), false);
+				source.sendFeedback(() -> message("chest_count", total), false);
 			}
 			return count;
 		} catch (Exception e) {
 			LOGGER.error("チェスト数の調査中にエラー", e);
-			source.sendError(Text.literal("チェスト数の調査中にエラーが発生しました: " + e.getClass().getSimpleName()));
+			source.sendError(message("chest_error", e.getClass().getSimpleName()));
 			return 0;
 		}
 	}
@@ -708,16 +653,16 @@ private static void resetGlowState(MinecraftServer server) {
 
 
 
-			private static int showCommandUsage(ServerCommandSource source) {
+private static int showCommandUsage(ServerCommandSource source) {
 
-		source.sendFeedback(() -> Text.literal("コマンド一覧").formatted(Formatting.LIGHT_PURPLE), false);
-		source.sendFeedback(() -> Text.literal("/ns search <構造物名> <検索数>").formatted(Formatting.YELLOW), false);
-		source.sendFeedback(() -> Text.literal("/ns search new <構造物名> <検索数>").formatted(Formatting.YELLOW), false);
-		source.sendFeedback(() -> Text.literal("/ns chest <範囲ブロック数>").formatted(Formatting.YELLOW), false);
-		source.sendFeedback(() -> Text.literal("/ns glowing_chest [範囲] [秒数]").formatted(Formatting.YELLOW), false);
-		source.sendFeedback(() -> Text.literal("").formatted(Formatting.WHITE), false);
-		source.sendFeedback(() -> Text.literal("※searchの検索数は省略すると1件になります").formatted(Formatting.RED), false);
-		source.sendFeedback(() -> Text.literal("※glowing_chestはデフォルト60秒で、最大10分まで指定できます").formatted(Formatting.RED), false);
+		source.sendFeedback(() -> message("command_list_title").formatted(Formatting.LIGHT_PURPLE), false);
+		source.sendFeedback(() -> message("command_search").formatted(Formatting.YELLOW), false);
+		source.sendFeedback(() -> message("command_search_new").formatted(Formatting.YELLOW), false);
+		source.sendFeedback(() -> message("command_chest").formatted(Formatting.YELLOW), false);
+		source.sendFeedback(() -> message("command_glowing_chest").formatted(Formatting.YELLOW), false);
+		source.sendFeedback(Text::empty, false);
+		source.sendFeedback(() -> message("command_hint_search").formatted(Formatting.RED), false);
+		source.sendFeedback(() -> message("command_hint_glowing").formatted(Formatting.RED), false);
 
 		return 1;
 
