@@ -23,6 +23,6 @@
   "message.nether_search.command_search_new": "/ns search new <structure> <count>",
   "message.nether_search.command_chest": "/ns chest <range in blocks>",
   "message.nether_search.command_glowing_chest": "/ns glowing_chest [range] [seconds]",
-  "message.nether_search.command_hint_search": "* search defaults to 1 result when <count> is omitted",
-  "message.nether_search.command_hint_glowing": "* glowing_chest defaults to 60 seconds and can be up to 10 minutes"
+  "message.nether_search.command_hint_search": "search defaults to 1 result when <count> is omitted",
+  "message.nether_search.command_hint_glowing": "glowing_chest defaults to 60 seconds and can be up to 10 minutes"
 }
