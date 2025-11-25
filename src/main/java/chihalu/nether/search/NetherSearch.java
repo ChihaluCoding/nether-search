@@ -56,6 +56,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -76,6 +77,11 @@ public class NetherSearch implements ModInitializer {
 	private static boolean needsMarkerRefresh = true;
 	private static long glowExpireTick = -1;
 	private static RegistryKey<World> glowWorldKey = null;
+	// ピグリン要塞の種別テキストキー（翻訳用）を定数化
+	private static final String BASTION_TYPE_TREASURE_KEY = "structure_type.bastion.treasure";
+	private static final String BASTION_TYPE_BRIDGE_KEY = "structure_type.bastion.bridge";
+	private static final String BASTION_TYPE_HOUSING_KEY = "structure_type.bastion.housing";
+	private static final String BASTION_TYPE_HOGLIN_KEY = "structure_type.bastion.hoglin";
 
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
@@ -194,8 +200,10 @@ private static int executeLocateList(ServerCommandSource source, String structur
 						continue;
 					}
 
-					BlockPos refinedPos = resolveStructureCenter(world, chunkPos, targetList, structureId);
-					BlockPos candidatePos = refinedPos != null ? refinedPos : located;
+					// 種類情報付きで座標を補正
+					StructureLocation resolvedLocation = resolveStructureCenter(world, chunkPos, targetList, structureId);
+					BlockPos candidatePos = resolvedLocation != null ? resolvedLocation.pos() : located;
+					String structureTypeKey = resolvedLocation != null ? resolvedLocation.structureTypeKey() : null;
 
 					if (currentChunk != null && currentChunk.equals(chunkPos)) {
 						continue;
@@ -220,7 +228,7 @@ private static int executeLocateList(ServerCommandSource source, String structur
 					}
 
 					ChunkPos resultChunk = locatedChunk != null ? locatedChunk : new ChunkPos(candidatePos);
-					found.add(new StructureResult(candidatePos, resultChunk));
+					found.add(new StructureResult(candidatePos, resultChunk, structureTypeKey));
 					markStructureKnown(structureId, chunkPos);
 				}
 			}
@@ -243,6 +251,12 @@ private static int executeLocateList(ServerCommandSource source, String structur
 						.append(Text.literal("[" + index + "] ").formatted(Formatting.GREEN))
 						.append(Text.literal(pos.getX() + " / " + pos.getZ()).formatted(Formatting.YELLOW))
 						.append(distanceText);
+				if (result.structureTypeKey() != null) {
+					// 種別ラベルを距離の後ろに追加
+					MutableText typeName = message(result.structureTypeKey()).formatted(Formatting.AQUA);
+					MutableText typeLabel = message("structure_type_label", typeName).formatted(Formatting.GRAY);
+					displayLine = displayLine.append(typeLabel);
+				}
 				final Text finalDisplayLine = displayLine;
 				source.sendFeedback(() -> finalDisplayLine, false);
 				index++;
@@ -434,7 +448,8 @@ private static int createGlowMarkers(ServerWorld world, BlockPos center, int rad
 		FOUND_STRUCTURE_CHUNKS.computeIfAbsent(id, key -> new HashSet<>()).add(chunkPos.toLong());
 	}
 
-private static BlockPos resolveStructureCenter(ServerWorld world, ChunkPos chunkPos, RegistryEntryList<Structure> targetList, String structureId) {
+// 生成された構造物の中心と種別を解決
+private static StructureLocation resolveStructureCenter(ServerWorld world, ChunkPos chunkPos, RegistryEntryList<Structure> targetList, String structureId) {
 	LongSet forcedChunks = world.getForcedChunks();
 	long chunkLong = ChunkPos.toLong(chunkPos.x, chunkPos.z);
 	boolean alreadyForced = forcedChunks.contains(chunkLong);
@@ -452,21 +467,24 @@ private static BlockPos resolveStructureCenter(ServerWorld world, ChunkPos chunk
 				return null;
 			}
 
-			BlockPos special = null;
+			StructureLocation specialLocation = null;
 			if ("fortress".equals(structureId)) {
-				special = findBridgeCrossing(start.getChildren());
+				BlockPos special = findBridgeCrossing(start.getChildren());
+				if (special != null) {
+					specialLocation = new StructureLocation(special, null);
+				}
 			} else if ("bastion_remnant".equals(structureId)) {
-				special = findBastionTreasure(start.getChildren());
+				specialLocation = findBastionDetails(start.getChildren());
 			}
-			if (special != null) {
-				return special;
+			if (specialLocation != null) {
+				return specialLocation;
 			}
 
 			BlockBox box = extractBoundingBox(start);
 			if (box == null) {
 				return null;
 			}
-			return getPieceCenter(box);
+			return new StructureLocation(getPieceCenter(box), null);
 		} finally {
 			if (!alreadyForced) {
 				world.setChunkForced(chunkPos.x, chunkPos.z, false);
@@ -495,8 +513,10 @@ private static BlockPos resolveStructureCenter(ServerWorld world, ChunkPos chunk
 		return fallback;
 	}
 
-	private static BlockPos findBastionTreasure(List<StructurePiece> pieces) {
-		BlockPos fallback = null;
+	// ピグリン要塞の種別と位置を解決
+	private static StructureLocation findBastionDetails(List<StructurePiece> pieces) {
+		BlockPos fallbackPos = null;
+		String fallbackType = null;
 		for (StructurePiece piece : pieces) {
 			if (!(piece instanceof PoolStructurePiece poolPiece)) {
 				continue;
@@ -510,14 +530,41 @@ private static BlockPos resolveStructureCenter(ServerWorld world, ChunkPos chunk
 			if (box == null) {
 				continue;
 			}
-			if (idString.contains("treasure")) {
-				return getPieceCenter(box);
+			String detectedType = detectBastionType(idString);
+			if (detectedType == null) {
+				continue;
 			}
-			if (fallback == null && (idString.contains("bridge") || idString.contains("entrance"))) {
-				fallback = getPieceCenter(box);
+			BlockPos center = getPieceCenter(box);
+			if (BASTION_TYPE_TREASURE_KEY.equals(detectedType)) {
+				return new StructureLocation(center, detectedType);
+			}
+			if (fallbackPos == null) {
+				fallbackPos = center;
+				fallbackType = detectedType;
 			}
 		}
-		return fallback;
+		if (fallbackPos != null) {
+			return new StructureLocation(fallbackPos, fallbackType);
+		}
+		return null;
+	}
+
+	// ピースID文字列からピグリン要塞の種別キーを抽出
+	private static String detectBastionType(String idString) {
+		String lowered = idString.toLowerCase(Locale.ROOT);
+		if (lowered.contains("treasure")) {
+			return BASTION_TYPE_TREASURE_KEY;
+		}
+		if (lowered.contains("hoglin") || lowered.contains("stable")) {
+			return BASTION_TYPE_HOGLIN_KEY;
+		}
+		if (lowered.contains("housing") || lowered.contains("units")) {
+			return BASTION_TYPE_HOUSING_KEY;
+		}
+		if (lowered.contains("bridge") || lowered.contains("entrance") || lowered.contains("rampart")) {
+			return BASTION_TYPE_BRIDGE_KEY;
+		}
+		return null;
 	}
 
 	private static Identifier getPoolPieceId(StructurePoolElement element) {
@@ -673,7 +720,11 @@ private static int showCommandUsage(ServerCommandSource source) {
 
 
 
-private record StructureResult(BlockPos pos, ChunkPos chunkPos) {}
+// 構造物の座標と種別ラベルを保持
+private record StructureResult(BlockPos pos, ChunkPos chunkPos, String structureTypeKey) {}
+
+// 座標解決時の補助レコード
+private record StructureLocation(BlockPos pos, String structureTypeKey) {}
 
 	private record GlowKey(RegistryKey<World> worldKey, BlockPos pos) {}
 }
