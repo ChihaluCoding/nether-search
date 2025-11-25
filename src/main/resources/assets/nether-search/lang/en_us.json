@@ -3,6 +3,7 @@
   "message.nether_search.no_structures_found": "No new structures were found in range",
   "message.nether_search.structure_list_header": "Found %1$s %2$s",
   "message.nether_search.structure_distance": " (Distance: %s)",
+  "message.nether_search.tp_clipboard_hint": "Click to copy %s to your clipboard",
   "message.nether_search.structure_type_label": " (Type: %s)",
   "message.nether_search.structure_search_error": "An error occurred while searching: %s",
   "message.nether_search.glow_none": "No chests were found in this range",

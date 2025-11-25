@@ -31,6 +31,8 @@ import net.minecraft.structure.StructureStart;
 import net.minecraft.structure.pool.LegacySinglePoolElement;
 import net.minecraft.structure.pool.SinglePoolElement;
 import net.minecraft.structure.pool.StructurePoolElement;
+import net.minecraft.text.ClickEvent;
+import net.minecraft.text.HoverEvent;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
@@ -247,9 +249,16 @@ private static int executeLocateList(ServerCommandSource source, String structur
 				BlockPos pos = result.pos();
 				double distance = Math.sqrt(originVec.squaredDistanceTo(Vec3d.ofCenter(pos)));
 				MutableText distanceText = message("structure_distance", String.format("%.1f", distance)).formatted(Formatting.GRAY);
+				// 座標をクリックするとテレポートコマンドを即座にコピーできるようにイベント付きテキストを構築
+				final String teleportCommand = "/tp " + pos.getX() + " ~ " + pos.getZ();
+				final MutableText hoverHint = message("tp_clipboard_hint", teleportCommand).formatted(Formatting.GRAY);
+				MutableText coordinateText = Text.literal(pos.getX() + " / " + pos.getZ()).formatted(Formatting.YELLOW)
+						.styled(style -> style
+								.withClickEvent(new ClickEvent.CopyToClipboard(teleportCommand))
+								.withHoverEvent(new HoverEvent.ShowText(hoverHint)));
 				MutableText displayLine = Text.empty()
 						.append(Text.literal("[" + index + "] ").formatted(Formatting.GREEN))
-						.append(Text.literal(pos.getX() + " / " + pos.getZ()).formatted(Formatting.YELLOW))
+						.append(coordinateText)
 						.append(distanceText);
 				if (result.structureTypeKey() != null) {
 					// 種別ラベルを距離の後ろに追加

@@ -3,6 +3,7 @@
   "message.nether_search.no_structures_found": "範囲内で新しい構造物は見つかりませんでした",
   "message.nether_search.structure_list_header": "%1$s個の%2$sが見つかりました",
   "message.nether_search.structure_distance": "（距離：%s）",
+  "message.nether_search.tp_clipboard_hint": "クリックで%sをクリップボードにコピー",
   "message.nether_search.structure_type_label": "（種類：%s）",
   "message.nether_search.structure_search_error": "検索中にエラーが発生しました: %s",
   "message.nether_search.glow_none": "この範囲に宝箱はありませんでした",
