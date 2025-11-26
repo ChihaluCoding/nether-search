@@ -35,6 +35,7 @@ import net.minecraft.text.ClickEvent;
 import net.minecraft.text.HoverEvent;
 import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
+import net.minecraft.text.Style;
 import net.minecraft.util.Formatting;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockBox;
@@ -52,6 +53,8 @@ import it.unimi.dsi.fastutil.longs.LongSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -158,7 +161,8 @@ private static int executeLocateList(ServerCommandSource source, String structur
 			ServerWorld world = source.getWorld();
 			Identifier id = Identifier.ofVanilla(structureId);
 			RegistryWrapper.WrapperLookup registryLookup = source.getRegistryManager();
-			RegistryEntryLookup<Structure> structureLookup = registryLookup.getOrThrow(RegistryKeys.STRUCTURE);
+			// バージョン差異があるためリフレクションで構造物レジストリを解決
+			RegistryEntryLookup<Structure> structureLookup = resolveStructureLookup(registryLookup);
 			RegistryKey<Structure> key = RegistryKey.of(RegistryKeys.STRUCTURE, id);
 			Optional<RegistryEntry.Reference<Structure>> structureEntry = structureLookup.getOptional(key);
 			if (structureEntry.isEmpty()) {
@@ -253,9 +257,7 @@ private static int executeLocateList(ServerCommandSource source, String structur
 				final String teleportCommand = "/tp " + pos.getX() + " ~ " + pos.getZ();
 				final MutableText hoverHint = message("tp_clipboard_hint", teleportCommand).formatted(Formatting.GRAY);
 				MutableText coordinateText = Text.literal(pos.getX() + " / " + pos.getZ()).formatted(Formatting.YELLOW)
-						.styled(style -> style
-								.withClickEvent(new ClickEvent.CopyToClipboard(teleportCommand))
-								.withHoverEvent(new HoverEvent.ShowText(hoverHint)));
+						.styled(style -> applyTeleportInteractions(style, teleportCommand, hoverHint));
 				MutableText displayLine = Text.empty()
 						.append(Text.literal("[" + index + "] ").formatted(Formatting.GREEN))
 						.append(coordinateText)
@@ -578,10 +580,11 @@ private static StructureLocation resolveStructureCenter(ServerWorld world, Chunk
 
 	private static Identifier getPoolPieceId(StructurePoolElement element) {
 		if (element instanceof SinglePoolElement single) {
-			return single.getIdOrThrow();
+			// 取得方法がバージョンで異なるため共通ヘルパーに委譲
+			return resolvePoolElementId(single);
 		}
 		if (element instanceof LegacySinglePoolElement legacy) {
-			return legacy.getIdOrThrow();
+			return resolvePoolElementId(legacy);
 		}
 		return null;
 	}
@@ -590,6 +593,101 @@ private static StructureLocation resolveStructureCenter(ServerWorld world, Chunk
 		return new BlockPos((pieceBox.getMinX() + pieceBox.getMaxX()) / 2,
 				(pieceBox.getMinY() + pieceBox.getMaxY()) / 2,
 				(pieceBox.getMinZ() + pieceBox.getMaxZ()) / 2);
+	}
+
+	// 構造物レジストリの取得処理をバージョンに依らず統一
+	private static RegistryEntryLookup<Structure> resolveStructureLookup(RegistryWrapper.WrapperLookup lookup) {
+		try {
+			Method modern = lookup.getClass().getMethod("getOrThrow", RegistryKey.class);
+			@SuppressWarnings("unchecked")
+			RegistryEntryLookup<Structure> result =
+					(RegistryEntryLookup<Structure>) modern.invoke(lookup, RegistryKeys.STRUCTURE);
+			return result;
+		} catch (ReflectiveOperationException ignored) {
+			try {
+				Method legacy = lookup.getClass().getMethod("getWrapperOrThrow", RegistryKey.class);
+				@SuppressWarnings("unchecked")
+				RegistryEntryLookup<Structure> result =
+						(RegistryEntryLookup<Structure>) legacy.invoke(lookup, RegistryKeys.STRUCTURE);
+				return result;
+			} catch (ReflectiveOperationException e) {
+				throw new IllegalStateException("構造物レジストリの解決に失敗しました", e);
+			}
+		}
+	}
+
+	// テレポート座標のスタイルへクリック・ホバー挙動を設定
+	private static Style applyTeleportInteractions(Style style, String teleportCommand, MutableText hoverHint) {
+		Style updated = style;
+		ClickEvent clickEvent = createClipboardClickEvent(teleportCommand);
+		if (clickEvent != null) {
+			updated = updated.withClickEvent(clickEvent);
+		}
+		HoverEvent hoverEvent = createShowTextHoverEvent(hoverHint);
+		if (hoverEvent != null) {
+			updated = updated.withHoverEvent(hoverEvent);
+		}
+		return updated;
+	}
+
+	// クリックイベントをバージョン差異を吸収して生成
+	private static ClickEvent createClipboardClickEvent(String teleportCommand) {
+		try {
+			Class<?> modernClass = Class.forName("net.minecraft.text.ClickEvent$CopyToClipboard");
+			Constructor<?> constructor = modernClass.getDeclaredConstructor(String.class);
+			constructor.setAccessible(true);
+			return (ClickEvent) constructor.newInstance(teleportCommand);
+		} catch (Exception modernError) {
+			try {
+				Class<?> legacyClass = Class.forName("net.minecraft.text.ClickEvent");
+				Constructor<?> legacyConstructor = legacyClass.getDeclaredConstructor(ClickEvent.Action.class, String.class);
+				legacyConstructor.setAccessible(true);
+				return (ClickEvent) legacyConstructor.newInstance(ClickEvent.Action.COPY_TO_CLIPBOARD, teleportCommand);
+			} catch (Exception legacyError) {
+				LOGGER.warn("ClickEvent生成に失敗: {}", legacyError.toString());
+				return null;
+			}
+		}
+	}
+
+	// ホバーイベントを各バージョンで共通に扱えるよう生成
+	private static HoverEvent createShowTextHoverEvent(MutableText hoverHint) {
+		try {
+			Class<?> modernClass = Class.forName("net.minecraft.text.HoverEvent$ShowText");
+			Constructor<?> constructor = modernClass.getDeclaredConstructor(Text.class);
+			constructor.setAccessible(true);
+			return (HoverEvent) constructor.newInstance(hoverHint);
+		} catch (Exception modernError) {
+			try {
+				Class<?> legacyClass = Class.forName("net.minecraft.text.HoverEvent");
+				Constructor<?> legacyConstructor = legacyClass.getDeclaredConstructor(HoverEvent.Action.class, Object.class);
+				legacyConstructor.setAccessible(true);
+				return (HoverEvent) legacyConstructor.newInstance(HoverEvent.Action.SHOW_TEXT, hoverHint);
+			} catch (Exception legacyError) {
+				LOGGER.warn("HoverEvent生成に失敗: {}", legacyError.toString());
+				return null;
+			}
+		}
+	}
+
+	// プール要素のIDをリフレクションで安全に取得
+	private static Identifier resolvePoolElementId(Object element) {
+		try {
+			Method modern = element.getClass().getMethod("getIdOrThrow");
+			return (Identifier) modern.invoke(element);
+		} catch (ReflectiveOperationException ignored) {
+			try {
+				Method legacy = element.getClass().getMethod("getId");
+				Object result = legacy.invoke(element);
+				if (result instanceof Optional<?> optional) {
+					return (Identifier) optional.orElse(null);
+				}
+				return (Identifier) result;
+			} catch (ReflectiveOperationException e) {
+				LOGGER.warn("構造プール要素IDの取得に失敗: {}", e.toString());
+				return null;
+			}
+		}
 	}
 	private static void discardMarkerEntity(ArmorStandEntity marker) {
 		if (marker != null && marker.isAlive()) {

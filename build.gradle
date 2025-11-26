@@ -39,7 +39,7 @@ fabricApi {
 dependencies {
 	// To change the versions see the gradle.properties file
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
-	// 現在は1.21.9を指定しているが1.21.10環境でも動作確認済み
+	// 現在は1.21.10向け設定（1.21〜1.21.10互換）でビルドする
 	mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
 	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
 

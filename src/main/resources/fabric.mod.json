@@ -3,7 +3,7 @@
 	"id": "nether-search",
 	"version": "${version}",
 	"name": "Nether Search",
-	"description": "ネザー要塞、ピグリン要塞がある座標を検索出来るMod",
+	"description": "ネザー要塞や砦の遺跡を素早く見つけるためのサーバーコマンド集",
 	"authors": [
 		"chihalu"
 	],
@@ -30,9 +30,9 @@
 	],
 	"depends": {
 		"fabricloader": ">=0.18.1",
-		"minecraft": "~1.21.9",
+		"minecraft": ">=1.21 <=1.21.10",
 		"java": ">=21",
-		"fabric-api": "*"
+		"fabric-api": ">=0.102.0+1.21"
 	},
 	"suggests": {
 		"another-mod": "*"
