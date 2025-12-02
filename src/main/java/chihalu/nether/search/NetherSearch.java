@@ -2,6 +2,7 @@ package chihalu.nether.search;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.datafixers.util.Either;
 import com.mojang.datafixers.util.Pair;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
@@ -54,6 +55,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -670,24 +672,87 @@ private static StructureLocation resolveStructureCenter(ServerWorld world, Chunk
 		}
 	}
 
-	// プール要素のIDをリフレクションで安全に取得
+	// プール要素のIDをリフレクション経由で取得する
 	private static Identifier resolvePoolElementId(Object element) {
-		try {
-			Method modern = element.getClass().getMethod("getIdOrThrow");
-			return (Identifier) modern.invoke(element);
-		} catch (ReflectiveOperationException ignored) {
-			try {
-				Method legacy = element.getClass().getMethod("getId");
-				Object result = legacy.invoke(element);
-				if (result instanceof Optional<?> optional) {
-					return (Identifier) optional.orElse(null);
-				}
-				return (Identifier) result;
-			} catch (ReflectiveOperationException e) {
-				LOGGER.warn("構造プール要素IDの取得に失敗: {}", e.toString());
-				return null;
-			}
+		// 1.21.5以前ではpublicでないため強制的に呼び出しを行う
+		Identifier modernId = invokePoolElementIdentifier(element, "getIdOrThrow");
+		if (modernId != null) {
+			return modernId;
 		}
+		// 古いバージョンでのみ存在するOptional戻り値のgetIdも試す
+		Identifier legacyId = invokePoolElementIdentifier(element, "getId");
+		if (legacyId != null) {
+			return legacyId;
+		}
+		// それでも取得できない場合はフィールドを走査してIdentifierを直接抽出する
+		Identifier fieldId = extractIdentifierFromPoolElement(element);
+		if (fieldId != null) {
+			return fieldId;
+		}
+		LOGGER.warn("プール要素のID取得に失敗: 対応するメソッドやフィールドが確認できませんでした");
+		return null;
+	}
+
+	// 任意アクセス修飾子のメソッドを直接叩いてIdentifierを抜き出す
+	private static Identifier invokePoolElementIdentifier(Object element, String methodName) {
+		if (element == null) {
+			return null;
+		}
+		try {
+			Method method = element.getClass().getDeclaredMethod(methodName);
+			method.setAccessible(true);
+			Object result = method.invoke(element);
+			if (result instanceof Identifier identifier) {
+				return identifier;
+			}
+			if (result instanceof Optional<?> optional) {
+				Object value = optional.orElse(null);
+				if (value instanceof Identifier identifier) {
+					return identifier;
+				}
+			}
+		} catch (ReflectiveOperationException | SecurityException e) {
+			LOGGER.debug("プール要素IDの取得で{}を呼び出す際に失敗: {}", methodName, e.toString());
+		}
+		return null;
+	}
+
+	// クラス階層を辿ってIdentifierが含まれるフィールドを探索し直接取り出す
+	private static Identifier extractIdentifierFromPoolElement(Object element) {
+		if (element == null) {
+			return null;
+		}
+		Class<?> current = element.getClass();
+		while (current != null && current != Object.class) {
+			for (Field field : current.getDeclaredFields()) {
+				Identifier identifier = readIdentifierFromField(element, field);
+				if (identifier != null) {
+					return identifier;
+				}
+			}
+			current = current.getSuperclass();
+		}
+		return null;
+	}
+
+	// フィールドの型がEitherやIdentifierを保持している場合にIDを抽出する
+	private static Identifier readIdentifierFromField(Object element, Field field) {
+		try {
+			field.setAccessible(true);
+			Object value = field.get(element);
+			if (value instanceof Identifier identifier) {
+				return identifier;
+			}
+			if (value instanceof Either<?, ?> either) {
+				Object left = either.left().orElse(null);
+				if (left instanceof Identifier identifier) {
+					return identifier;
+				}
+			}
+		} catch (IllegalAccessException | SecurityException ignored) {
+			LOGGER.debug("プール要素ID抽出中にフィールド{}へアクセスできませんでした", field.getName());
+		}
+		return null;
 	}
 	private static void discardMarkerEntity(ArmorStandEntity marker) {
 		if (marker != null && marker.isAlive()) {
