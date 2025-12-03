@@ -597,24 +597,13 @@ private static StructureLocation resolveStructureCenter(ServerWorld world, Chunk
 				(pieceBox.getMinZ() + pieceBox.getMaxZ()) / 2);
 	}
 
-	// 構造物レジストリの取得処理をバージョンに依らず統一
+	// 構造物レジストリを直接要求し、開発版と本番版の両方で安定して呼び出す
 	private static RegistryEntryLookup<Structure> resolveStructureLookup(RegistryWrapper.WrapperLookup lookup) {
 		try {
-			Method modern = lookup.getClass().getMethod("getOrThrow", RegistryKey.class);
-			@SuppressWarnings("unchecked")
-			RegistryEntryLookup<Structure> result =
-					(RegistryEntryLookup<Structure>) modern.invoke(lookup, RegistryKeys.STRUCTURE);
-			return result;
-		} catch (ReflectiveOperationException ignored) {
-			try {
-				Method legacy = lookup.getClass().getMethod("getWrapperOrThrow", RegistryKey.class);
-				@SuppressWarnings("unchecked")
-				RegistryEntryLookup<Structure> result =
-						(RegistryEntryLookup<Structure>) legacy.invoke(lookup, RegistryKeys.STRUCTURE);
-				return result;
-			} catch (ReflectiveOperationException e) {
-				throw new IllegalStateException("構造物レジストリの解決に失敗しました", e);
-			}
+			// Fabric環境ではgetOrThrowがマッピング済みであり、反射よりも安全に取得できる
+			return lookup.getOrThrow(RegistryKeys.STRUCTURE);
+		} catch (NoSuchMethodError missingMethod) {
+			throw new IllegalStateException("構造物レジストリの解決に失敗しました", missingMethod);
 		}
 	}
 
